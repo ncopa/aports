@@ -3,22 +3,23 @@
 pkgname=openssh
 pkgver=7.4_p1
 _myver=${pkgver%_*}${pkgver#*_}
-pkgrel=2
+pkgrel=3
 pkgdesc="Port of OpenBSD's free SSH release"
 url="http://www.openssh.org/portable.html"
 arch="all"
 license="as-is"
 options="suid"
-depends="openssh-client openssh-sftp-server openssh-server"
+depends="$pkgname-clients $pkgname-utils $pkgname-server
+	$pkgname-keysign $pkgname-pkcs11-helper $pkgname-sftp-server
+	"
 makedepends_build=""
 makedepends_host="libressl-dev zlib-dev linux-headers"
 makedepends="$makedepends_build $makedepends_host"
-subpackages="$pkgname-doc
-	$pkgname-keygen
-	$pkgname-client
-	$pkgname-keysign
-	$pkgname-sftp-server:sftp
-	$pkgname-server
+subpackages="$pkgname-doc $pkgname-add:_sub $pkgname-agent:_sub $pkgname-ssh
+	$pkgname-scp:_sub $pkgname-sftp:_sub $pkgname-keygen:_sub $pkgname-keyscan:_sub
+	$pkgname-keysign $pkgname-sftp-server:_sub $pkgname-pkcs11-helper:_pkcs
+	$pkgname-copy-id:_copy:noarch $pkgname-moduli:_sub:noarch $pkgname-server
+	$pkgname-clients::noarch $pkgname-utils::noarch $pkgname-client::noarch
 	"
 source="http://ftp.openbsd.org/pub/OpenBSD/OpenSSH/portable/$pkgname-$_myver.tar.gz
 	openssh7.4-peaktput.patch
@@ -68,77 +69,79 @@ build() {
 }
 
 package() {
-	cd "$builddir"
-	make DESTDIR="$pkgdir" install || return 1
-	mkdir -p "$pkgdir"/var/empty
-	install -D -m755 "$srcdir"/sshd.initd \
-		"$pkgdir"/etc/init.d/sshd || return 1
-	install -D -m644 "$srcdir"/sshd.confd \
-		"$pkgdir"/etc/conf.d/sshd || return 1
+	make -C "$builddir" DESTDIR="$pkgdir" install || return 1
 	install -Dm644 "$builddir"/contrib/ssh-copy-id.1 \
-		"$pkgdir"/usr/share/man/man1/ssh-copy-id.1 || return 1
-	sed -i 's/#UseDNS yes/UseDNS no/' "$pkgdir"/etc/ssh/sshd_config
+		"$pkgdir"/usr/share/man/man1
 }
 
-keygen() {
-	pkgdesc="ssh helper program for generating keys"
+_sub() {
 	depends=
-	install -d "$subpkgdir"/usr/bin || return 1
-	mv "$pkgdir"/usr/bin/ssh-keygen \
-		"$subpkgdir"/usr/bin/ || return 1
+	local name=${subpkgname#$pkgname-}
+	local file=$(find "$pkgdir" -type f -a -name "$name" -o -name "ssh-$name")
+	grep -q "/usr/bin/ssh" $file && depends="$depends $pkgname-ssh"
+	grep -q "/etc/ssh/moduli" $file && depends="$depends $pkgname-moduli"
+	pkgdesc=$(awk -F"S " "/${file##*/}.*\^S/ {print \$2}" "$builddir"/${file##*/}.0)
+	[ -z "${pkgdesc##OpenSSH*}" ] || pkgdesc="OpenSSH $pkgdesc"
+	file=${file#$pkgdir}
+	mkdir -p "$subpkgdir"/${file%/*} || return 1
+	mv "$pkgdir"/$file "$subpkgdir"/$file || return 1
 }
 
-client() {
-	pkgdesc="OpenBSD's SSH client"
-	depends="openssh-keygen"
-	install -d "$subpkgdir"/usr/bin \
-		"$subpkgdir"/usr/lib/ssh \
-		"$subpkgdir"/etc/ssh \
-		"$subpkgdir"/var/empty
-
-	mv "$pkgdir"/usr/bin/* \
-		"$subpkgdir"/usr/bin/ || return 1
-	mv "$pkgdir"/etc/ssh/ssh_config \
-		"$pkgdir"/etc/ssh/moduli \
-		"$subpkgdir"/etc/ssh/ || return 1
-	install -Dm755 "$builddir"/contrib/findssl.sh \
-		"$subpkgdir"/usr/bin/findssl.sh || return 1
-	install -Dm755 "$builddir"/contrib/ssh-copy-id \
-		"$subpkgdir"/usr/bin/ssh-copy-id || return 1
+ssh() {
+	_sub || return 1
+	mkdir -p "$subpkgdir"/etc/ssh || return 1
+	mv "$pkgdir"/etc/ssh/ssh_config "$subpkgdir"/etc/ssh
 }
 
 keysign() {
-	pkgdesc="ssh helper program for host-based authentication"
-	depends="openssh-client"
-	install -d "$subpkgdir"/usr/lib/ssh || return 1
-	mv "$pkgdir"/usr/lib/ssh/ssh-keysign \
-		"$subpkgdir"/usr/lib/ssh/ || return 1
+	_sub || return 1
+	depends="$pkgname-ssh $depends"
 }
 
-sftp() {
-	pkgdesc="ssh sftp server module"
-	depends=""
-	install -d "$subpkgdir"/usr/lib/ssh || return 1
-	mv "$pkgdir"/usr/lib/ssh/sftp-server \
-		"$subpkgdir"/usr/lib/ssh/ || return 1
+_copy() {
+	pkgdesc="OpenSSH use locally available keys to authorise logins on a remote machine"
+	depends="$pkgname-ssh"
+	install -Dm755 "$builddir"/contrib/ssh-copy-id \
+		"$subpkgdir"/usr/bin/ssh-copy-id
+}
+
+_pkcs() {
+	_sub || return 1
+	depends="$pkgname-agent $depends"
+}
+
+clients() {
+	pkgdesc="OpenSSH clients (ssh, scp, sftp)"
+	depends="$pkgname-ssh $pkgname-scp $pkgname-sftp"
+	mkdir -p "$subpkgdir"
+}
+
+utils() {
+	pkgdesc="OpenSSH utilities (add, agent, keygen, keyscan, copy-id)"
+	depends="$pkgname-add $pkgname-agent $pkgname-keygen $pkgname-keyscan $pkgname-copy-id"
+	mkdir -p "$subpkgdir"
+}
+
+client() {
+	pkgdesc="OpenSSH compatibility pack ($pkgname-clients + $pkgname-utils)"
+	depends="$pkgname-clients $pkgname-utils"
+	mkdir -p "$subpkgdir"
 }
 
 server() {
-	pkgdesc="OpenSSH server"
-	depends="openssh-keygen"
+	local name=sshd
+	pkgdesc="OpenSSH SSH server"
+	depends="$pkgname-keygen $pkgname-moduli"
+	provides="$pkgname-$name"
 
-	for i in etc/ssh/sshd_config \
-		etc/init.d/sshd \
-		etc/conf.d/sshd \
-		usr/sbin/sshd \
-		usr/lib/ssh/ssh-pkcs11-helper; do
+	mkdir -p "$subpkgdir"
+	mv "$pkgdir"/* "$subpkgdir"/ || return 1
 
-		install -d "$subpkgdir"/${i%/*} || return 1
-		mv "$pkgdir"/$i \
-			"$subpkgdir"/${i%/*}/ || return 1
-	done
+	install -Dm755 "$srcdir"/$name.initd "$subpkgdir"/etc/init.d/$name || return 1
+	install -Dm644 "$srcdir"/$name.confd "$subpkgdir"/etc/conf.d/$name || return 1
+
+	rmdir "$subpkgdir"/usr/bin "$subpkgdir"/usr/lib/ssh "$subpkgdir"/usr/lib || return 1
 }
-
 
 sha512sums="4f3256f461f01366c5d5e0e45285eec65016e2643b3284b407f48f53d81087bf2c1caf7d5f7530d307a15c91c64de91446e1cba948e8fc68f82098290fe3b292  openssh-7.4p1.tar.gz
 398096a89aa104abeff31aa043ac406a6348e0fdd4d313b7888ee0b931d38fd71fc21bceee46145e88f03bc27e00890e068442faee2d33f86cfbc04d58ffa4b6  openssh7.4-peaktput.patch
